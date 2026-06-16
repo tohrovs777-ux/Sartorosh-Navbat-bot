@@ -1,4 +1,5 @@
 import logging
+import os
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -6,8 +7,8 @@ from telegram.ext import (
 )
 
 # --- SOZLAMALAR ---
-TOKEN = "8859606385:AAEVqDBmvbDR1nCh4LNyDipkcmK8dtoVvnA"
-ADMIN_ID = 7480459140  # Bu yerga o'z Telegram ID ingizni qoying
+TOKEN = os.getenv("TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 # Bosqichlar
 XIZMAT, VAQT, ISM, TELEFON = range(4)
@@ -49,7 +50,6 @@ async def xizmat_tanlash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["xizmat"] = XIZMATLAR[tanlangan]
     context.user_data["xizmat_narx"] = tanlangan
 
-    # Vaqtlarni 2 ta qilib joylash
     keyboard = [VAQTLAR[i:i+2] for i in range(0, len(VAQTLAR), 2)]
     keyboard.append(["🔙 Orqaga"])
 
@@ -110,7 +110,6 @@ async def telefon_kiritish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["telefon"] = update.message.text
     data = context.user_data
 
-    # Mijozga tasdiqlash
     await update.message.reply_text(
         f"✅ *Navbatingiz qabul qilindi!*\n\n"
         f"📋 *Ma'lumotlar:*\n"
@@ -118,13 +117,11 @@ async def telefon_kiritish(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✂️ Xizmat: {data['xizmat']}\n"
         f"⏰ Vaqt: {data['vaqt']}\n"
         f"📞 Telefon: {data['telefon']}\n\n"
-        f"📍 Manzil: [Manzilni shu yerga yozing]\n\n"
         f"⚠️ Iltimos, belgilangan vaqtda keling!",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardRemove()
     )
 
-    # Adminga xabar
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
