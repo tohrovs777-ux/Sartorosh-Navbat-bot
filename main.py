@@ -88,7 +88,7 @@ def db_execute(query, params=None):
     conn.close()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sartor = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=:1", [update.effective_user.id])
+    sartor = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=$1", [update.effective_user.id])
     keyboard = [
         ["💈 Sartaroshxona topish"],
         ["🏪 Sartaroshxona ro'yxatdan o'tkazish"],
@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def sartor_royxat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mavjud = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=:1", [update.effective_user.id])
+    mavjud = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=$1", [update.effective_user.id])
     if mavjud:
         await update.message.reply_text("❌ Allaqachon ro'yxatdan o'tgansiz!")
         return ConversationHandler.END
@@ -139,7 +139,7 @@ async def sartor_narx(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await start(update, context)
     data = context.user_data
     db_execute(
-        "INSERT INTO sartaroshxonalar (ega_id, ism, manzil, telefon, narx) VALUES (:1, :2, :3, :4, :5)",
+        "INSERT INTO sartaroshxonalar (ega_id, ism, manzil, telefon, narx) VALUES ($1, $2, $3, $4, $5)",
         [update.effective_user.id, data["sartor_ism"], data["sartor_manzil"], data["sartor_telefon"], update.message.text]
     )
     await update.message.reply_text(
@@ -151,8 +151,8 @@ async def sartor_narx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await start(update, context)
 
 async def mening_sartorim(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    sartor = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=:1", [update.effective_user.id])
-    navbatlar = db_fetchall("SELECT * FROM navbatlar WHERE sartarosh_id=:1 AND holat='kutilmoqda'", [sartor["id"]])
+    sartor = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=$1", [update.effective_user.id])
+    navbatlar = db_fetchall("SELECT * FROM navbatlar WHERE sartarosh_id=$1 AND holat='kutilmoqda'", [sartor["id"]])
     matn = f"⚙️ Sizning sartaroshxonangiz:\n\n🏪 {sartor['ism']}\n📍 {sartor['manzil']}\n📞 {sartor['telefon']}\n💰 {sartor['narx']}\n\n"
     if navbatlar:
         matn += f"📋 Navbatlar ({len(navbatlar)} ta):\n\n"
@@ -232,7 +232,7 @@ async def mijoz_telefon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = context.user_data
     sartor = data["tanlangan_sartor"]
     db_execute(
-        "INSERT INTO navbatlar (sartarosh_id, mijoz_id, mijoz_ism, mijoz_telefon, xizmat, vaqt) VALUES (:1, :2, :3, :4, :5, :6)",
+        "INSERT INTO navbatlar (sartarosh_id, mijoz_id, mijoz_ism, mijoz_telefon, xizmat, vaqt) VALUES ($1, $2, $3, $4, $5, $6)",
         [sartor["id"], update.effective_user.id, data["mijoz_ism"], update.message.text, data["xizmat"], data["vaqt"]]
     )
     await update.message.reply_text(
@@ -253,7 +253,7 @@ async def mening_navbatlarim(update: Update, context: ContextTypes.DEFAULT_TYPE)
     navbatlar = db_fetchall("""
         SELECT n.*, s.ism as sartor_ism, s.manzil, s.telefon
         FROM navbatlar n JOIN sartaroshxonalar s ON n.sartarosh_id=s.id
-        WHERE n.mijoz_id=:1 ORDER BY n.id DESC LIMIT 5
+        WHERE n.mijoz_id=$1 ORDER BY n.id DESC LIMIT 5
     """, [update.effective_user.id])
     if not navbatlar:
         await update.message.reply_text("😔 Hozircha navbatingiz yo'q.")
