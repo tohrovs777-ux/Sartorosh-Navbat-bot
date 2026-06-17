@@ -1,7 +1,6 @@
 import os
 import logging
-import psycopg2
-import psycopg2.extras
+import pg8000.native
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler,
@@ -17,13 +16,22 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 SARTOR_ISM, SARTOR_MANZIL, SARTOR_TELEFON, SARTOR_NARX = range(4)
 MIJOZ_TANLASH, MIJOZ_XIZMAT, MIJOZ_VAQT, MIJOZ_ISM, MIJOZ_TELEFON = range(4, 9)
 
+import urllib.parse
+
 def get_db():
-    return psycopg2.connect(DATABASE_URL)
+    url = urllib.parse.urlparse(DATABASE_URL)
+    return pg8000.native.Connection(
+        user=url.username,
+        password=url.password,
+        host=url.hostname,
+        port=url.port or 5432,
+        database=url.path.lstrip("/"),
+        ssl_context=None
+    )
 
 def init_db():
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
+    conn.run("""
         CREATE TABLE IF NOT EXISTS sartaroshxonalar (
             id SERIAL PRIMARY KEY,
             ega_id BIGINT UNIQUE,
@@ -31,36 +39,56 @@ def init_db():
             manzil TEXT,
             telefon TEXT,
             narx TEXT,
-            faol BOOLEAN DEFAULT TRUE,
-            yaratilgan TIMESTAMP DEFAULT NOW()
+            faol BOOLEAN DEFAULT TRUE
         )
     """)
-    cur.execute("""
+    conn.run("""
         CREATE TABLE IF NOT EXISTS navbatlar (
             id SERIAL PRIMARY KEY,
-            sartarosh_id INTEGER REFERENCES sartaroshxonalar(id),
+            sartarosh_id INTEGER,
             mijoz_id BIGINT,
             mijoz_ism TEXT,
             mijoz_telefon TEXT,
             xizmat TEXT,
             vaqt TEXT,
-            holat TEXT DEFAULT 'kutilmoqda',
-            yaratilgan TIMESTAMP DEFAULT NOW()
+            holat TEXT DEFAULT 'kutilmoqda'
         )
     """)
-    conn.commit()
-    cur.close()
     conn.close()
     print("✅ Database tayyor!")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def db_fetchone(query, params=None):
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM sartaroshxonalar WHERE ega_id=%s", (update.effective_user.id,))
-    sartor = cur.fetchone()
-    cur.close()
+    if params:
+        rows = conn.run(query, *params)
+    else:
+        rows = conn.run(query)
+    cols = [c["name"] for c in conn.columns]
+    conn.close()
+    if rows:
+        return dict(zip(cols, rows[0]))
+    return None
+
+def db_fetchall(query, params=None):
+    conn = get_db()
+    if params:
+        rows = conn.run(query, *params)
+    else:
+        rows = conn.run(query)
+    cols = [c["name"] for c in conn.columns]
+    conn.close()
+    return [dict(zip(cols, row)) for row in rows]
+
+def db_execute(query, params=None):
+    conn = get_db()
+    if params:
+        conn.run(query, *params)
+    else:
+        conn.run(query)
     conn.close()
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sartor = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=:1", [update.effective_user.id])
     keyboard = [
         ["💈 Sartaroshxona topish"],
         ["🏪 Sartaroshxona ro'yxatdan o'tkazish"],
@@ -68,28 +96,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     if sartor:
         keyboard.insert(1, ["⚙️ Mening sartaroshxonam"])
-
     await update.message.reply_text(
         "💈 Sartarosh Platformaga xush kelibsiz!\n\nNimani xohlaysiz?",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
     return ConversationHandler.END
 
-# === SARTAROSHXONA RO'YXATDAN O'TISH ===
 async def sartor_royxat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM sartaroshxonalar WHERE ega_id=%s", (update.effective_user.id,))
-    mavjud = cur.fetchone()
-    cur.close()
-    conn.close()
-
+    mavjud = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=:1", [update.effective_user.id])
     if mavjud:
-        await update.message.reply_text("❌ Siz allaqachon ro'yxatdan o'tgansiz!\n\n⚙️ Mening sartaroshxonam tugmasini bosing.")
+        await update.message.reply_text("❌ Allaqachon ro'yxatdan o'tgansiz!")
         return ConversationHandler.END
-
     await update.message.reply_text(
-        "🏪 Sartaroshxona nomi kiriting:",
+        "🏪 Sartaroshxona nomini kiriting:",
         reply_markup=ReplyKeyboardMarkup([["❌ Bekor qilish"]], resize_keyboard=True)
     )
     return SARTOR_ISM
@@ -98,137 +117,88 @@ async def sartor_ism(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
         return await start(update, context)
     context.user_data["sartor_ism"] = update.message.text
-    await update.message.reply_text("📍 To'liq manzilini kiriting:\nMasalan: Toshkent, Chilonzor, 5-mavze 12-uy")
+    await update.message.reply_text("📍 Manzilini kiriting:")
     return SARTOR_MANZIL
 
 async def sartor_manzil(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
         return await start(update, context)
     context.user_data["sartor_manzil"] = update.message.text
-    await update.message.reply_text("📞 Telefon raqami:\nMasalan: +998901234567")
+    await update.message.reply_text("📞 Telefon raqami:")
     return SARTOR_TELEFON
 
 async def sartor_telefon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
         return await start(update, context)
     context.user_data["sartor_telefon"] = update.message.text
-    await update.message.reply_text("💰 Narxlarni kiriting:\nMasalan: Soch-15000, Soqol-10000, Ikkalasi-20000")
+    await update.message.reply_text("💰 Narxlarni kiriting:\nMasalan: Soch-15000, Soqol-10000")
     return SARTOR_NARX
 
 async def sartor_narx(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
         return await start(update, context)
     data = context.user_data
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO sartaroshxonalar (ega_id, ism, manzil, telefon, narx)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (update.effective_user.id, data["sartor_ism"], data["sartor_manzil"],
-          data["sartor_telefon"], update.message.text))
-    conn.commit()
-    cur.close()
-    conn.close()
-
+    db_execute(
+        "INSERT INTO sartaroshxonalar (ega_id, ism, manzil, telefon, narx) VALUES (:1, :2, :3, :4, :5)",
+        [update.effective_user.id, data["sartor_ism"], data["sartor_manzil"], data["sartor_telefon"], update.message.text]
+    )
     await update.message.reply_text(
-        f"✅ Muvaffaqiyatli ro'yxatdan o'tdingiz!\n\n"
-        f"🏪 Nom: {data['sartor_ism']}\n"
-        f"📍 Manzil: {data['sartor_manzil']}\n"
-        f"📞 Telefon: {data['sartor_telefon']}\n"
-        f"💰 Narxlar: {update.message.text}\n\n"
-        f"Endi mijozlar sizni topa oladi! 🎉"
+        f"✅ Ro'yxatdan o'tdingiz!\n\n"
+        f"🏪 {data['sartor_ism']}\n📍 {data['sartor_manzil']}\n"
+        f"📞 {data['sartor_telefon']}\n💰 {update.message.text}\n\n"
+        f"Mijozlar sizni topa oladi! 🎉"
     )
     return await start(update, context)
 
-# === MENING SARTAROSHXONAM ===
 async def mening_sartorim(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM sartaroshxonalar WHERE ega_id=%s", (update.effective_user.id,))
-    sartor = cur.fetchone()
-    cur.execute("""
-        SELECT * FROM navbatlar WHERE sartarosh_id=%s AND holat='kutilmoqda'
-        ORDER BY yaratilgan DESC LIMIT 10
-    """, (sartor["id"],))
-    navbatlar = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    matn = (
-        f"⚙️ Sizning sartaroshxonangiz:\n\n"
-        f"🏪 {sartor['ism']}\n"
-        f"📍 {sartor['manzil']}\n"
-        f"📞 {sartor['telefon']}\n"
-        f"💰 {sartor['narx']}\n\n"
-    )
-
+    sartor = db_fetchone("SELECT * FROM sartaroshxonalar WHERE ega_id=:1", [update.effective_user.id])
+    navbatlar = db_fetchall("SELECT * FROM navbatlar WHERE sartarosh_id=:1 AND holat='kutilmoqda'", [sartor["id"]])
+    matn = f"⚙️ Sizning sartaroshxonangiz:\n\n🏪 {sartor['ism']}\n📍 {sartor['manzil']}\n📞 {sartor['telefon']}\n💰 {sartor['narx']}\n\n"
     if navbatlar:
-        matn += f"📋 Kutilayotgan navbatlar ({len(navbatlar)} ta):\n\n"
+        matn += f"📋 Navbatlar ({len(navbatlar)} ta):\n\n"
         for n in navbatlar:
             matn += f"👤 {n['mijoz_ism']} | {n['xizmat']} | ⏰ {n['vaqt']} | 📞 {n['mijoz_telefon']}\n"
     else:
         matn += "📋 Hozircha navbat yo'q."
-
     await update.message.reply_text(matn)
     return ConversationHandler.END
 
-# === SARTAROSHXONA TOPISH ===
 async def sartor_topish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("SELECT * FROM sartaroshxonalar WHERE faol=TRUE ORDER BY id DESC")
-    sartorllar = cur.fetchall()
-    cur.close()
-    conn.close()
-
+    sartorllar = db_fetchall("SELECT * FROM sartaroshxonalar WHERE faol=TRUE ORDER BY id DESC")
     if not sartorllar:
-        await update.message.reply_text("😔 Hozircha ro'yxatdan o'tgan sartaroshxona yo'q.")
+        await update.message.reply_text("😔 Hozircha sartaroshxona yo'q.")
         return ConversationHandler.END
-
-    context.user_data["sartor_list"] = list(sartorllar)
+    context.user_data["sartor_list"] = sartorllar
     keyboard = []
     matn = "💈 Mavjud sartaroshxonalar:\n\n"
-
     for i, s in enumerate(sartorllar, 1):
         matn += f"{i}. 🏪 {s['ism']}\n📍 {s['manzil']}\n💰 {s['narx']}\n📞 {s['telefon']}\n\n"
         keyboard.append([f"{i}. {s['ism']}"])
-
     keyboard.append(["❌ Bekor qilish"])
-    await update.message.reply_text(
-        matn + "Qaysi sartaroshxonani tanlaysiz?",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+    await update.message.reply_text(matn + "Qaysinisini tanlaysiz?", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return MIJOZ_TANLASH
 
 async def mijoz_tanlash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
         return await start(update, context)
-
     sartor_list = context.user_data.get("sartor_list", [])
     tanlangan = None
     for i, s in enumerate(sartor_list, 1):
         if update.message.text.startswith(f"{i}."):
             tanlangan = s
             break
-
     if not tanlangan:
-        await update.message.reply_text("Iltimos, ro'yxatdan tanlang!")
+        await update.message.reply_text("Ro'yxatdan tanlang!")
         return MIJOZ_TANLASH
-
-    context.user_data["tanlangan_sartor"] = dict(tanlangan)
+    context.user_data["tanlangan_sartor"] = tanlangan
     keyboard = [["✂️ Soch olish"], ["🪒 Soqol olish"], ["✂️🪒 Ikkalasi"], ["❌ Bekor qilish"]]
-    await update.message.reply_text(
-        f"✅ {tanlangan['ism']} tanlandi!\n\nQaysi xizmat?",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+    await update.message.reply_text(f"✅ {tanlangan['ism']} tanlandi!\n\nQaysi xizmat?", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
     return MIJOZ_XIZMAT
 
 async def mijoz_xizmat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
         return await start(update, context)
-    xizmatlar = ["✂️ Soch olish", "🪒 Soqol olish", "✂️🪒 Ikkalasi"]
-    if update.message.text not in xizmatlar:
+    if update.message.text not in ["✂️ Soch olish", "🪒 Soqol olish", "✂️🪒 Ikkalasi"]:
         await update.message.reply_text("Ro'yxatdan tanlang!")
         return MIJOZ_XIZMAT
     context.user_data["xizmat"] = update.message.text
@@ -259,63 +229,35 @@ async def mijoz_ism(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mijoz_telefon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Bekor qilish":
         return await start(update, context)
-
     data = context.user_data
     sartor = data["tanlangan_sartor"]
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO navbatlar (sartarosh_id, mijoz_id, mijoz_ism, mijoz_telefon, xizmat, vaqt)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """, (sartor["id"], update.effective_user.id,
-          data["mijoz_ism"], update.message.text,
-          data["xizmat"], data["vaqt"]))
-    conn.commit()
-    cur.close()
-    conn.close()
-
+    db_execute(
+        "INSERT INTO navbatlar (sartarosh_id, mijoz_id, mijoz_ism, mijoz_telefon, xizmat, vaqt) VALUES (:1, :2, :3, :4, :5, :6)",
+        [sartor["id"], update.effective_user.id, data["mijoz_ism"], update.message.text, data["xizmat"], data["vaqt"]]
+    )
     await update.message.reply_text(
-        f"✅ Navbat qabul qilindi!\n\n"
-        f"🏪 {sartor['ism']}\n"
-        f"📍 {sartor['manzil']}\n"
-        f"📞 {sartor['telefon']}\n"
-        f"✂️ {data['xizmat']} | ⏰ {data['vaqt']}\n\n"
-        f"Belgilangan vaqtda keling! 🎉",
+        f"✅ Navbat qabul qilindi!\n\n🏪 {sartor['ism']}\n📍 {sartor['manzil']}\n"
+        f"📞 {sartor['telefon']}\n✂️ {data['xizmat']} | ⏰ {data['vaqt']}\n\nBelgilangan vaqtda keling! 🎉",
         reply_markup=ReplyKeyboardRemove()
     )
-
     try:
         await context.bot.send_message(
             chat_id=sartor["ega_id"],
-            text=f"🔔 YANGI NAVBAT!\n\n"
-                 f"👤 {data['mijoz_ism']}\n"
-                 f"📞 {update.message.text}\n"
-                 f"✂️ {data['xizmat']} | ⏰ {data['vaqt']}"
+            text=f"🔔 YANGI NAVBAT!\n\n👤 {data['mijoz_ism']}\n📞 {update.message.text}\n✂️ {data['xizmat']} | ⏰ {data['vaqt']}"
         )
     except Exception as e:
         logging.error(f"Xato: {e}")
-
     return await start(update, context)
 
-# === MENING NAVBATLARIM ===
 async def mening_navbatlarim(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    conn = get_db()
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    cur.execute("""
+    navbatlar = db_fetchall("""
         SELECT n.*, s.ism as sartor_ism, s.manzil, s.telefon
-        FROM navbatlar n
-        JOIN sartaroshxonalar s ON n.sartarosh_id = s.id
-        WHERE n.mijoz_id=%s ORDER BY n.yaratilgan DESC LIMIT 5
-    """, (update.effective_user.id,))
-    navbatlar = cur.fetchall()
-    cur.close()
-    conn.close()
-
+        FROM navbatlar n JOIN sartaroshxonalar s ON n.sartarosh_id=s.id
+        WHERE n.mijoz_id=:1 ORDER BY n.id DESC LIMIT 5
+    """, [update.effective_user.id])
     if not navbatlar:
         await update.message.reply_text("😔 Hozircha navbatingiz yo'q.")
         return ConversationHandler.END
-
     matn = "📋 Sizning navbatlaringiz:\n\n"
     for n in navbatlar:
         matn += f"🏪 {n['sartor_ism']}\n📍 {n['manzil']}\n✂️ {n['xizmat']} | ⏰ {n['vaqt']}\n📊 {n['holat']}\n\n"
@@ -325,7 +267,6 @@ async def mening_navbatlarim(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     init_db()
     app = ApplicationBuilder().token(TOKEN).build()
-
     conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex("^💈 Sartaroshxona topish$"), sartor_topish),
@@ -346,7 +287,6 @@ def main():
         },
         fallbacks=[CommandHandler("start", start)],
     )
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv)
     print("✅ Bot ishga tushdi!")
